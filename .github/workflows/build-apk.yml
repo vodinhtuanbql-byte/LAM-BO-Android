@@ -24,10 +24,11 @@ jobs:
 
       - name: Setup Android SDK
         run: |
-          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
 
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager 2>/dev/null | head -n 1)"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort | tail -n 1)"
 
           if [ -z "$SDKMANAGER" ]; then
             echo "ERROR: Cannot find Android SDK sdkmanager"
@@ -36,7 +37,10 @@ jobs:
 
           yes | "$SDKMANAGER" --licenses || true
 
-          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -45,22 +49,50 @@ jobs:
 
       - name: Extract project ZIP
         run: |
-          mkdir project
+          mkdir -p project
           unzip -q LAMBO_WEBVIEW135.zip -d project
+          echo "ZIP extracted successfully"
 
-      - name: Check Android project
+      - name: Locate Android project
         run: |
-          ls -la project
-          test -f project/settings.gradle || test -f project/settings.gradle.kts
-          test -f project/app/build.gradle || test -f project/app/build.gradle.kts
+          SETTINGS_FILE="$(find project -maxdepth 6 -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)"
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: Cannot find settings.gradle"
+            find project -maxdepth 5 -type f
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Android project found at: $PROJECT_DIR"
+          ls -la "$PROJECT_DIR"
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "ERROR: Cannot find app/build.gradle"
+            exit 1
+          fi
 
       - name: Build APK
         run: |
-          gradle --no-daemon -p project :app:assembleDebug
+          gradle --no-daemon -p "$PROJECT_DIR" :app:assembleDebug
+
+      - name: Prepare APK
+        run: |
+          APK_PATH="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK_PATH" ]; then
+            echo "ERROR: APK file was not generated"
+            exit 1
+          fi
+
+          cp "$APK_PATH" "$GITHUB_WORKSPACE/LAM-BO-debug.apk"
+          ls -lh "$GITHUB_WORKSPACE/LAM-BO-debug.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: LAM-BO-Android-APK
-          path: project/app/build/outputs/apk/debug/app-debug.apk
+          path: LAM-BO-debug.apk
           if-no-files-found: error
